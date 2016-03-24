@@ -95,8 +95,21 @@ DO_ERROR_INFO(do_trap_unknown,
 	SIGILL, ILL_ILLTRP, "unknown exception");
 DO_ERROR_INFO(do_trap_insn_misaligned,
 	SIGBUS, BUS_ADRALN, "instruction address misaligned");
-DO_ERROR_INFO(do_trap_insn_illegal,
-	SIGILL, ILL_ILLOPC, "illegal instruction");
+//DO_ERROR_INFO(do_trap_insn_illegal,
+//	SIGILL, ILL_ILLOPC, "illegal instruction");
+
+asmlinkage void do_trap_insn_illegal(struct pt_regs *regs)
+{
+    if(!((*((long unsigned int*)regs->sepc) & 0xB) ^ 0xB))
+    {
+	printk("Lazily setting XS bit\n");
+	regs->sstatus |= SR_XS_INITIAL;
+    }
+    else 
+    {
+	do_trap_error(regs, SIGILL, ILL_ILLOPC, regs->sepc, "Oops - " "illegal instruction");
+    }
+}
 
 asmlinkage void do_trap_break(struct pt_regs *regs)
 {
