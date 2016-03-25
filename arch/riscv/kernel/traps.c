@@ -102,7 +102,18 @@ asmlinkage void do_trap_insn_illegal(struct pt_regs *regs)
 {
     if(!((*((long unsigned int*)regs->sepc) & 0xB) ^ 0xB))
     {
-	printk("Lazily setting XS bit\n");
+	printk("Lazily setting XS bit for pid: %d, xdasid = %d\n", current->pid, current->xdasid);
+	
+	if(current->xdasid == 0)
+	{
+	    printk("Setting asid for pid: %d\n", current->pid);
+	    current->xdasid = current->pid;
+	    printk("xdasid is now: %d\n", current->xdasid);
+	}
+	else
+	{
+	    printk("asid already set for PID: %d\n", current->pid);
+	}
 	regs->sstatus |= SR_XS_INITIAL;
     }
     else 

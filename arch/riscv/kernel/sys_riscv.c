@@ -63,7 +63,15 @@ SYSCALL_DEFINE4(sysriscv, unsigned long, cmd, unsigned long, arg1,
 		preempt_enable();
 
 		return unlikely(err) ? err : prev;
+
+	case RISCV_HELLO:
+	    printk("RISCV_HELLO: %d\n", current->pid);
+	    return prev;
+
 	}
+	
+
+    
 
 	return -EINVAL;
 }
