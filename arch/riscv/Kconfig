@@ -21,6 +21,7 @@ config RISCV
 	select RV_SYSRISCV_ATOMIC if !RV_ATOMIC
 	select SYSCTL_EXCEPTION_TRACE
 	select HAVE_ARCH_TRACEHOOK
+	select MODULES_USE_ELF_RELA
 
 config MMU
 	def_bool y

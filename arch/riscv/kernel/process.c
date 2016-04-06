@@ -53,7 +53,7 @@ void show_regs(struct pt_regs *regs)
 void start_thread(struct pt_regs *regs, unsigned long pc, 
 	unsigned long sp)
 {
-    printk("start_thread\n");
+    //printk("start_thread\n");
 	regs->sstatus = SR_PIE /* User mode, irqs on */ | SR_FS_INITIAL;
 	regs->sepc = pc;
 	regs->sp = sp;
@@ -81,7 +81,7 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 	unsigned long arg, struct task_struct *p)
 {
 	struct pt_regs *childregs = task_pt_regs(p);
-	printk("current = %d\n", current->pid);
+//	printk("current = %d\n", current->pid);
 	
 	/* p->thread holds context to be restored by __switch_to() */
 	if (unlikely(p->flags & PF_KTHREAD)) {
@@ -96,8 +96,8 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 		p->thread.s[1] = arg;
 	} else {
 	    //printk("copy_thread user\n");
-	    	printk("copy_thread: pid = %d\n", p->pid);
-
+	        printk("copy_thread: pid = %d\n", p->pid);
+		
 		*childregs = *(current_pt_regs());
 		if (usp) /* User fork */
 			childregs->sp = usp;
