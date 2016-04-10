@@ -5,5 +5,7 @@
 __SYSCALL(__NR_sysriscv, sys_sysriscv)
 #endif
 
+__SYSCALL(__NR_sysriscv+1, sys_syshello)
+
 #define RISCV_ATOMIC_CMPXCHG    1
 #define RISCV_ATOMIC_CMPXCHG64  2

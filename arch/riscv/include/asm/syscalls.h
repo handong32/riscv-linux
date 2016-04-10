@@ -9,4 +9,5 @@
 asmlinkage long sys_sysriscv(unsigned long, unsigned long,
 	unsigned long, unsigned long);
 
+asmlinkage void sys_syshello(void);
 #endif /* _ASM_RISCV_SYSCALLS_H */
