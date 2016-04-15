@@ -108,6 +108,10 @@ config MYIOCTL
 	tristate "MYIOCTL"
 	default y
 
+config CHARIOCTL
+	tristate "CHARIOCTL"
+	default y
+
 config RVC
 	bool "Use compressed instructions (RV32C or RV64C)"
 	default n
