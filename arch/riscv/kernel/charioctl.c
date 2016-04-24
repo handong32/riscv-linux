@@ -4,13 +4,16 @@
 #include <linux/kernel.h>         // Contains types, macros, functions for the kernel
 #include <linux/fs.h>             // Header for the Linux file system support
 #include <asm/uaccess.h>          // Required for the copy to user function
+#include <asm/io.h>
 
 #include <linux/mm.h>
 #include <linux/slab.h>
+#include <linux/types.h>
 
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/csr.h>
+#include <asm/io.h>
 
 #define  DEVICE_NAME "ebbchar"    ///< The device will appear at /dev/ebbchar using this value
 #define  CLASS_NAME  "ebb"        ///< The device class -- this is a character device driver
@@ -124,6 +127,23 @@ static struct class*  ebbcharClass  = NULL; ///< The device-driver class struct 
 static struct device* ebbcharDevice = NULL; ///< The device-driver device struct pointer
 static int    ioNum = 100;
 
+static asid_type asid;
+static int old_antp;
+static nnid_type nnid;
+static int file_bytes;
+static int file_size;
+static uint64_t connections_per_epoch;
+static x_len * vconfig;
+static phys_addr_t nqd;
+static phys_addr_t pnew_table;
+static phys_addr_t pentry;
+static phys_addr_t pasid_nnid;
+static phys_addr_t ptransaction_io; 
+static phys_addr_t pinput;
+static phys_addr_t poutput;
+
+#include "/home/handong/github/riscv-tests/tests/dev_ioctl.h"
+
 xlen_t set_asid(asid_type asid) {
   int old_asid;
   asm volatile ("custom0 %[old_asid], %[rs1], 0, 0"
@@ -148,11 +168,61 @@ xlen_t xf_read_csr(xfiles_csr_t csr) {
   return csr_value;
 }
 
+uint64_t binary_config_num_connections(void) {
+  int i;
+
+  uint64_t connections = 0;
+  uint16_t total_layers, layer_offset, ptr;
+  uint32_t tmp;
+  uint16_t layer_0, layer_1;
+  
+  //fseek(fp, 6, SEEK_SET);
+  //fread(&total_layers, sizeof(uint16_t), 1, fp);
+  copy_from_user(&total_layers, (void*)vconfig+6, sizeof(uint16_t));
+  
+  //fread(&layer_offset, sizeof(uint16_t), 1, fp);
+  copy_from_user(&layer_offset, (void*)vconfig+6+sizeof(uint16_t), sizeof(uint16_t));
+
+  //fseek(fp, layer_offset, SEEK_SET);
+  //fread(&ptr, sizeof(uint16_t), 1, fp);
+  copy_from_user(&ptr, (void*)vconfig+layer_offset, sizeof(uint16_t));
+  ptr &= ~((~0)<<12);
+  
+  //fseek(fp, ptr + 2, SEEK_SET);
+  //fread(&layer_0, sizeof(uint16_t), 1, fp);
+  copy_from_user(&layer_0, (void*)vconfig+ptr+2, sizeof(uint16_t));
+  layer_0 &= ~((~0)<<8);
+
+  //fseek(fp, layer_offset, SEEK_SET);
+  //fread(&tmp, sizeof(uint32_t), 1, fp);
+  copy_from_user(&tmp, (void*)vconfig+layer_offset, sizeof(uint32_t));
+  layer_1 = (tmp & (~((~0)<<10))<<12)>>12;
+
+  connections += (layer_0 + 1) * layer_1;
+
+  for (i = 1; i < total_layers; i++) {
+    layer_0 = layer_1;
+    
+    //fseek(fp, layer_offset + 4 * i, SEEK_SET);
+    //fread(&tmp, sizeof(uint32_t), 1, fp);
+    copy_from_user(&tmp, (void*)vconfig+layer_offset + 4 * i, sizeof(uint32_t));
+
+    layer_1 = (tmp & (~((~0)<<10))<<12)>>12;
+    connections += (layer_0 + 1) * layer_1;
+  }
+
+  return connections;
+}
+
+
 void construct_queue(queue ** new_queue, int size) {
     (*new_queue)->data = (uint64_t *) kmalloc(size * sizeof(uint64_t), GFP_KERNEL);
     (*new_queue)->size = size;
     (*new_queue)->head = (*new_queue)->data;
     (*new_queue)->tail = (*new_queue)->data;
+
+    nqd = virt_to_phys((void*) (*new_queue)->data);
+    (*new_queue)->data = (uint64_t *) nqd;
 }
 
 void destroy_queue(queue ** old_queue) {
@@ -166,27 +236,49 @@ void asid_nnid_table_create(asid_nnid_table ** new_table, size_t table_size,
 
   // Allocate space for the table
   *new_table = (asid_nnid_table *) kmalloc(sizeof(asid_nnid_table), GFP_KERNEL);
+  pnew_table = virt_to_phys((void*) (*new_table));
+
   (*new_table)->entry =
       (asid_nnid_table_entry *) kmalloc(sizeof(asid_nnid_table_entry) * table_size, GFP_KERNEL);
+  pentry = virt_to_phys((void*) ((*new_table)->entry));
+
   (*new_table)->size = table_size;
 
   for (i = 0; i < table_size; i++) {
     // Create the configuration region
     (*new_table)->entry[i].asid_nnid =
 	(nn_configuration *) kmalloc(configs_per_entry * sizeof(nn_configuration), GFP_KERNEL);
+    pasid_nnid = virt_to_phys((void*) ((*new_table)->entry[i].asid_nnid));
+    
     (*new_table)->entry[i].asid_nnid->config = NULL;
     (*new_table)->entry[i].num_configs = configs_per_entry;
     (*new_table)->entry[i].num_valid = 0;
 
     // Create the io region
     (*new_table)->entry[i].transaction_io = (io *) kmalloc(sizeof(io), GFP_KERNEL);
+    ptransaction_io = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io));
+    
     (*new_table)->entry[i].transaction_io->header = 0;
     (*new_table)->entry[i].transaction_io->input = (queue *) kmalloc(sizeof(queue), GFP_KERNEL);
+    pinput = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io->input));
+    
     (*new_table)->entry[i].transaction_io->output = (queue *) kmalloc(sizeof(queue), GFP_KERNEL);
+    poutput = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io->output));
+
     construct_queue(&(*new_table)->entry[i].transaction_io->input, 16);
     construct_queue(&(*new_table)->entry[i].transaction_io->output, 16);
   }
 
+}
+
+void update_phys(asid_nnid_table * table)
+{
+    table->entry[0].transaction_io->input = (queue*) pinput;
+    table->entry[0].transaction_io->output = (queue*) poutput;
+    table->entry[0].transaction_io = (io *) ptransaction_io;
+    table->entry[0].asid_nnid = (nn_configuration *) pasid_nnid;
+    table->entry = (asid_nnid_table_entry *) pentry;
+    //table = (asid_nnid_table *)pnew_table;
 }
 
 void asid_nnid_table_info(asid_nnid_table * table) {
@@ -237,13 +329,92 @@ void asid_nnid_table_info(asid_nnid_table * table) {
   }
 }
 
-
-
 // The prototype functions for the character driver -- must come before the struct definition
 static int     dev_open(struct inode *, struct file *);
 static int     dev_release(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char *, size_t, loff_t *);
+
+long device_ioctl(struct file* file,
+		  unsigned int ioctl_num,
+		  unsigned long ioctl_param)
+{
+    int res;
+    xlen_t temp, oldasid;
+    
+    switch(ioctl_num){
+    case IOCTL_SET_FILESIZE:
+	res = get_user(temp, (xlen_t*)ioctl_param);
+	if(res != 0)
+	{
+	    printk("IOCTL_SET_FILESIZE error\n");
+	    break;
+	}
+	
+	nnid = asid_nnid_ktable->entry[asid].num_valid;
+	file_bytes = temp;
+	
+	file_size = file_bytes / sizeof(xlen_t);
+	file_size += (file_bytes % sizeof(xlen_t)) ? 1 : 0;
+	
+	asid_nnid_ktable->entry[asid].asid_nnid[nnid].size = file_size;
+	printk("file size = %ld\n", asid_nnid_ktable->entry[asid].asid_nnid[nnid].size);
+	break;
+    case IOCTL_SET_NN:
+	res = get_user(temp, (xlen_t*)ioctl_param);
+	if(res != 0)
+	{
+	    printk("IOCTL_SET_NN error\n");
+	    break;
+	}
+
+	vconfig = (x_len *)temp;
+	phys_addr_t paddr = virt_to_phys((void*) temp);
+	printk("virt addr 0x%p, phys addr 0x%p\n", (void*) temp, (void*) paddr);
+
+	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = (xlen_t*) paddr;
+	uint64_t block_64;
+        copy_from_user(&block_64, vconfig, sizeof(block_64));
+	if(res != 0)
+	{
+	    printk("IOCTL_SET_NN copy_from_user error\n");
+	    break;
+	}
+
+	block_64 = (block_64 >> 4) & 3;
+	asid_nnid_ktable->entry[asid].asid_nnid[nnid].elements_per_block = 1 << (block_64+2);
+
+	printk("elements_per_block: %ld\n", asid_nnid_ktable->entry[asid].asid_nnid[nnid].elements_per_block);
+	asid_nnid_ktable->entry[asid].num_valid ++;
+	printk("num_valid: %d\n", asid_nnid_ktable->entry[asid].num_valid);
+	
+	oldasid = set_asid(asid);
+	printk("oldasid = %d\n", oldasid);
+	
+	connections_per_epoch = binary_config_num_connections();
+	printk("connections_per_epoch: %ld\n", connections_per_epoch);
+	
+	break;
+    case IOCTL_SHOW_ANT:
+	asid_nnid_table_info(asid_nnid_ktable);
+	break;
+
+    case IOCTL_PHYS_ADDR:
+	printk("0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n", nqd, pnew_table, pentry, pasid_nnid, ptransaction_io, pinput, poutput);
+	update_phys(asid_nnid_ktable);
+	asid_nnid_ktable = (asid_nnid_table *) pnew_table;
+	//printk("0x%p\n", asid_nnid_ktable);
+	//asid_nnid_table_info(asid_nnid_ktable);
+	    
+	break;
+
+    default:
+	printk("default ioctl\n");
+	break;
+    }
+
+    return 0;
+}
 
 /** @brief Devices are represented as file structure in the kernel. The file_operations structure from
  *  /linux/fs.h lists the callback functions that you wish to associated with your file operations
@@ -255,6 +426,7 @@ static struct file_operations fops =
    .read = dev_read,
    .write = dev_write,
    .release = dev_release,
+   .unlocked_ioctl = device_ioctl,
 };
 
 /** @brief The LKM initialization function
@@ -357,15 +529,16 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 	if(asid_nnid_ktable == NULL) 
 	{
 	    printk("Creating asid_nnid_ktable\n");
-	    asid_type asid;
 	    int old_antp;
-	    nnid_type nnid;
 
 	    asid = 0; 
 	    nnid = 0;
 	    asid_nnid_table_create(&asid_nnid_ktable, asid * 2 + 1, nnid * 2 + 1);
 
-	    old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
+	    printk("entry = 0x%p\n", asid_nnid_ktable->entry);
+	    
+	    //old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
+	    old_antp = set_antp((asid_nnid_table_entry *)pentry, asid_nnid_ktable->size);
 	    printk("old_antp = %d\n", old_antp);
 	}
 	else
