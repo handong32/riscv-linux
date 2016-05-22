@@ -108,8 +108,8 @@ config MYIOCTL
 	tristate "MYIOCTL"
 	default y
 
-config CHARIOCTL
-	tristate "CHARIOCTL"
+config NNDEV
+	tristate "NNDEV"
 	default y
 
 config RVC

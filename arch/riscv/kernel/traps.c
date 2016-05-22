@@ -187,45 +187,8 @@ DO_ERROR_INFO(do_trap_unknown,
 	SIGILL, ILL_ILLTRP, "unknown exception");
 DO_ERROR_INFO(do_trap_insn_misaligned,
 	SIGBUS, BUS_ADRALN, "instruction address misaligned");
-//DO_ERROR_INFO(do_trap_insn_illegal,
-//	SIGILL, ILL_ILLOPC, "illegal instruction");
-
-asmlinkage void do_trap_insn_illegal(struct pt_regs *regs)
-{
-    if(!((*((long unsigned int*)regs->sepc) & 0xB) ^ 0xB))
-    {
-	printk("Lazily setting XS bit for pid: %d, xdasid = %d\n", current->pid, current->xdasid);
-	
-	/* if(current->xdasid == 0) */
-	/* { */
-	/*     printk("Setting asid for pid: %d\n", current->pid); */
-	/*     current->xdasid = current->pid; */
-	/*     printk("xdasid is now: %d\n", current->xdasid); */
-	    
-	/*     if(asid_nnid_ktable != NULL) */
-	/*     { */
-	/* 	asid_nnid_table_info(asid_nnid_ktable); */
-	/*     } */
-	    
-	/*     if(asid_nnid_ktable == NULL) */
-	/*     { */
-	/* 	printk("asid_nnid_table_create\n"); */
-	/* 	asid_type asid = 0; */
-	/* 	nnid_type nnid = 0; */
-	/* 	asid_nnid_table_create(&asid_nnid_ktable, asid * 2 + 1, nnid * 2 + 1); */
-	/*     } */
-	/* } */
-	/* else */
-	/* { */
-	/*     printk("asid already set for PID: %d\n", current->pid); */
-	/* } */
-	regs->sstatus |= SR_XS_INITIAL;
-    }
-    else 
-    {
-	do_trap_error(regs, SIGILL, ILL_ILLOPC, regs->sepc, "Oops - " "illegal instruction");
-    }
-}
+DO_ERROR_INFO(do_trap_insn_illegal,
+	SIGILL, ILL_ILLOPC, "illegal instruction");
 
 asmlinkage void do_trap_break(struct pt_regs *regs)
 {

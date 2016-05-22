@@ -55,6 +55,7 @@ void start_thread(struct pt_regs *regs, unsigned long pc,
 {
     //printk("start_thread\n");
 	regs->sstatus = SR_PIE /* User mode, irqs on */ | SR_FS_INITIAL;
+	regs->sstatus |= SR_XS_INITIAL; /* Enable (Turn On) accelerator extensions status : aka custom 0-3 */
 	regs->sepc = pc;
 	regs->sp = sp;
 	set_fs(USER_DS);
@@ -96,7 +97,7 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 		p->thread.s[1] = arg;
 	} else {
 	    //printk("copy_thread user\n");
-	        printk("copy_thread: pid = %d\n", p->pid);
+	    //printk("copy_thread: pid = %d\n", p->pid);
 		
 		*childregs = *(current_pt_regs());
 		if (usp) /* User fork */

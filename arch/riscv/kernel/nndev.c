@@ -1,9 +1,9 @@
-#include <linux/init.h>           // Macros used to mark up functions e.g. __init __exit
-#include <linux/module.h>         // Core header for loading LKMs into the kernel
-#include <linux/device.h>         // Header to support the kernel Driver Model
-#include <linux/kernel.h>         // Contains types, macros, functions for the kernel
-#include <linux/fs.h>             // Header for the Linux file system support
-#include <asm/uaccess.h>          // Required for the copy to user function
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/device.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <asm/uaccess.h>
 #include <asm/io.h>
 
 #include <linux/mm.h>
@@ -14,20 +14,20 @@
 #include <asm/ptrace.h>
 #include <asm/csr.h>
 #include <asm/io.h>
+#include <asm/pgalloc.h>
 
-#define  DEVICE_NAME "ebbchar"    ///< The device will appear at /dev/ebbchar using this value
-#define  CLASS_NAME  "ebb"        ///< The device class -- this is a character device driver
+#define  DEVICE_NAME "nndev"
+#define  CLASS_NAME  "nn"
 
-MODULE_LICENSE("GPL");            ///< The license type -- this affects available functionality
-MODULE_AUTHOR("BU");    ///< The author -- visible when you use modinfo
-MODULE_DESCRIPTION("riscv xfiles-dana mod");  ///< The description -- see modinfo
-MODULE_VERSION("0.000000000001");            ///< A version number to inform users
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("BU");
+MODULE_DESCRIPTION("nndev");
+MODULE_VERSION("1");
 
-typedef uint32_t nnid_type;
-typedef uint16_t asid_type;
-typedef uint16_t tid_type;
+typedef int16_t asid_type;
+typedef int32_t nnid_type;
+typedef int16_t tid_type;
 typedef int32_t element_type;
-typedef uint64_t x_len;
 typedef uint64_t xlen_t;
 
 typedef enum {
@@ -37,17 +37,19 @@ typedef enum {
 } xfiles_reg;
 
 typedef enum {
-  READ_DATA = 0,
-  WRITE_DATA = 1,
-  NEW_REQUEST = 3,
-  WRITE_DATA_LAST = 5,
-  WRITE_REGISTER = 7,
-  XFILES_DANA_ID = 16
+  t_USR_READ_DATA = 4,
+  t_USR_WRITE_DATA = 5,
+  t_USR_NEW_REQUEST = 6,
+  t_USR_WRITE_DATA_LAST = 7,
+  t_USR_WRITE_REGISTER = 8,
+  t_USR_XFILES_DEBUG = 9,
+  t_USR_XFILES_DANA_ID = 10
 } request_t;
 
 typedef enum {
-  UPDATE_ASID = 0,
-  UPDATE_ANTP = 1
+  t_SUP_UPDATE_ASID = 0,
+  t_SUP_WRITE_REG = 1,
+  t_SUP_READ_CSR = 2
 } request_super_t;
 
 typedef enum {
@@ -81,6 +83,15 @@ typedef enum {
   err_INVEPB      = 5
 } dana_err_t;
 
+// Enumerated type that defines the action taken by the Debug Unit
+typedef enum {
+  a_REG,          // Return a value written using the cmd interface
+  a_MEM_READ,     // Read data from the L1 cache and return it
+  a_MEM_WRITE,    // Write data to the L1 cache
+  a_VIRT_TO_PHYS, // Do address translation via the PTW port
+  a_UTL_READ,     // Read data from the L2 cache and return it
+  a_UTL_WRITE     // Write data to the L2 cache
+} xfiles_debug_action_t;
 
 typedef enum {
   csr_CAUSE = 0
@@ -102,7 +113,7 @@ typedef struct {                 // |----------------|   |    |
 typedef struct {                 // |--------------------|               |
   size_t size;                   // | size of config     |               |
   size_t elements_per_block;     // | elements per block |               |
-  x_len * config;                // | * config           |-> [NN Config] |
+  xlen_t * config;                // | * config           |-> [NN Config] |
 } nn_configuration;              // |--------------------| <---|         |
                                  //                            |         |
 typedef struct {                 // |-------------------|      |         |
@@ -123,49 +134,119 @@ static int    majorNumber;                  ///< Stores the device number -- det
 static char   message[256] = {0};           ///< Memory for the string that is passed from userspace
 static short  size_of_message;              ///< Used to remember the size of the string stored
 static int    numberOpens = 0;              ///< Counts the number of times the device is opened
-static struct class*  ebbcharClass  = NULL; ///< The device-driver class struct pointer
-static struct device* ebbcharDevice = NULL; ///< The device-driver device struct pointer
-//static int    ioNum = 100;
+static struct class*  nnClass  = NULL; ///< The device-driver class struct pointer
+static struct device* nnDevice = NULL; ///< The device-driver device struct pointer
+
 
 static asid_type asid;
 static nnid_type nnid;
 static int file_bytes;
 static int file_size;
 static uint64_t connections_per_epoch;
-static x_len * vconfig;
-static xlen_t* test2;
+static xlen_t * vconfig;
 /*static phys_addr_t nqd;
 static phys_addr_t pnew_table;
 static phys_addr_t pentry;
 static phys_addr_t pasid_nnid;
 static phys_addr_t ptransaction_io; 
 static phys_addr_t pinput;
-static phys_addr_t poutput;*/
+static phys_addr_t poutput;
+static int    ioNum = 100;*/
 
-#include "/home/handong/github/riscv-tests/tests/dev_ioctl.h"
+#define MAJOR_NUM 101
+#define IOCTL_SET_FILESIZE _IOR(MAJOR_NUM, 0, xlen_t *)
+#define IOCTL_SET_NN _IOR(MAJOR_NUM, 1, xlen_t *)
+#define IOCTL_SHOW_ANT _IO(MAJOR_NUM, 2)
+#define IOCTL_PHYS_ADDR _IO(MAJOR_NUM, 3)
+#define IOCTL_TRANS_PHYS_ADDR _IOR(MAJOR_NUM, 4, xlen_t*)
+
+#define RESP_CODE_WIDTH 3
+
+// Macros for using XCustom instructions. Four different macros are
+// provided depending on whether or not the passed arguments should be
+// communicated as registers or immediates.
+#define XCUSTOM "custom0"
+
+// Standard macro that passes rd_, rs1_, and rs2_ via registers
+#define XFILES_INSTRUCTION(rd_, rs1_, rs2_, funct_)     \
+  XFILES_INSTRUCTION_R_R_R(rd_, rs1_, rs2_, funct_)
+#define XFILES_INSTRUCTION_R_R_R(rd_, rs1_, rs2_, funct_)               \
+  asm volatile (XCUSTOM" %[rd], %[rs1], %[rs2], %[funct]"               \
+                : [rd] "=r" (rd_)                                       \
+                : [rs1] "r" (rs1_), [rs2] "r" (rs2_), [funct] "i" (funct_))
+
+// Macro to pass rs2_ as an immediate
+#define XFILES_INSTRUCTION_R_R_I(rd_, rs1_, rs2_, funct_)               \
+  asm volatile (XCUSTOM" %[rd], %[rs1], %[rs2], %[funct]"               \
+                : [rd] "=r" (rd_)                                       \
+                : [rs1] "r" (rs1_), [rs2] "i" (rs2_), [funct] "i" (funct_))
+
+    // Macro to pass rs1_ and rs2_ as immediates
+#define XFILES_INSTRUCTION_R_I_I(rd_, rs1_, rs2_, funct_)               \
+  asm volatile (XCUSTOM" %[rd], %[rs1], %[rs2], %[funct]"               \
+                : [rd] "=r" (rd_)                                       \
+                : [rs1] "i" (rs1_), [rs2] "i" (rs2_), [funct] "i" (funct_))
+
+xlen_t debug_test(xfiles_debug_action_t action, uint32_t data, void * addr) {
+  xlen_t out, action_and_data = ((uint64_t)action << 32) | (uint32_t)data;
+  XFILES_INSTRUCTION(out, action_and_data, addr, t_USR_XFILES_DEBUG);
+  return out;
+}
+
+xlen_t debug_echo_via_reg(uint32_t data) {
+  return debug_test(a_REG, data, 0);
+}
+
+xlen_t debug_read_mem(void * addr) {
+  return debug_test(a_MEM_READ, 0, addr);
+}
+
+xlen_t debug_write_mem(uint32_t data, void * addr) {
+  return debug_test(a_MEM_WRITE, data, addr);
+}
+
+xlen_t debug_virt_to_phys(void * addr_v) {
+  return debug_test(a_VIRT_TO_PHYS, 0, addr_v);
+}
+
+xlen_t debug_read_utl(void * addr) {
+  return debug_test(a_UTL_READ, 0, addr);
+}
+
+xlen_t debug_write_utl(uint32_t data, void * addr) {
+  return debug_test(a_UTL_WRITE, data, addr);
+}
 
 xlen_t set_asid(asid_type asid) {
   int old_asid;
-  asm volatile ("custom0 %[old_asid], %[rs1], 0, 0"
-                : [old_asid] "=r" (old_asid)
-                : [rs1] "r" (asid));
+  XFILES_INSTRUCTION_R_R_I(old_asid, asid, 0, t_SUP_UPDATE_ASID);
   return old_asid;
 }
 
 xlen_t set_antp(asid_nnid_table_entry * antp, size_t size) {
   int old_antp;
-  asm volatile ("custom0 %[old_antp], %[rs1], %[rs2], 1"
-                : [old_antp] "=r" (old_antp)
-                : [rs1] "r" (antp), [rs2] "r" (size));
+  XFILES_INSTRUCTION(old_antp, antp, size, t_SUP_WRITE_REG);
   return old_antp;
 }
 
 xlen_t xf_read_csr(xfiles_csr_t csr) {
   xlen_t csr_value;
-  asm volatile ("custom0 %[csr_value], %[rs1], 0, 2"
-                : [csr_value] "=r" (csr_value)
-                : [rs1] "r" (csr));
+  XFILES_INSTRUCTION_R_R_I(csr_value, csr, 0, t_SUP_READ_CSR);
   return csr_value;
+}
+
+
+void
+dumpNNBytes(xlen_t *addr, xlen_t size)
+{
+    xlen_t i;
+    printk("dumpNNBytes in kernel:\n");
+    printk("NN: 0x%llx size: %llu\n", (xlen_t)addr, size);
+    for (i=0; i<size; i++) {
+	if (i%8 == 0) printk("\n%03llu: ", i);
+	printk("%016llx ", addr[i]);
+    }
+    printk("\n\n");
 }
 
 uint64_t binary_config_num_connections(void) {
@@ -221,7 +302,7 @@ void construct_queue(queue ** new_queue, int size) {
     (*new_queue)->head = (*new_queue)->data;
     (*new_queue)->tail = (*new_queue)->data;
 
-    //nqd = virt_to_phys((void*) (*new_queue)->data);
+    //
     //(*new_queue)->data = (uint64_t *) nqd;
 }
 
@@ -254,6 +335,9 @@ void asid_nnid_table_create(asid_nnid_table ** new_table, size_t table_size,
     (*new_table)->entry[i].num_configs = configs_per_entry;
     (*new_table)->entry[i].num_valid = 0;
 
+
+#if 0
+    /* THE FOLLOWING IS FOR MEMORY BASED I/O -- NOT CURRENT SUPPORTED BY HW YET */
     // Create the io region
     (*new_table)->entry[i].transaction_io = (io *) kmalloc(sizeof(io), GFP_KERNEL);
     //ptransaction_io = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io));
@@ -267,6 +351,7 @@ void asid_nnid_table_create(asid_nnid_table ** new_table, size_t table_size,
 
     construct_queue(&(*new_table)->entry[i].transaction_io->input, 16);
     construct_queue(&(*new_table)->entry[i].transaction_io->output, 16);
+#endif
   }
 
 }
@@ -329,7 +414,57 @@ void asid_nnid_table_info(asid_nnid_table * table) {
   }
 }
 
-// The prototype functions for the character driver -- must come before the struct definition
+xlen_t user_virt_to_phys(xlen_t addr)
+{
+    xlen_t paddr, mask, offsetMask, sanity;
+    struct page *page;
+    struct mm_struct *mm;
+    pgd_t *pgd;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+    
+    offsetMask = 0xfff;
+    page = NULL;
+    mm = current->mm;
+
+    /* sanity check va bits 38 to 63 must be equal */
+    sanity = addr >> 38;
+    if(sanity != 0 && sanity != 0x3ffffff)
+    {
+	printk("Invalid virtual address: 0x%llx, 0x%llx\n", sanity, addr);
+	return -1;
+    }
+    
+    //mask out bits 39-63
+    mask = (1UL << 39)-1;
+    addr &= mask;
+    offsetMask &= addr;
+    //printk("\tvirt_addr = 0x%llx, offsetMask = 0x%llx\n", addr, offsetMask);
+    
+    pgd = pgd_offset(mm, addr);
+    if (pgd_present(*pgd)) 
+    {
+        pud = pud_offset(pgd, addr);
+	if(pud_present(*pud))
+	{
+	    pmd = pmd_offset(pud, addr);
+	    if (pmd_present(*pmd)) 
+	    {
+	        pte = pte_offset_map(pmd, addr);
+		if (pte_present(*pte)) 
+		{
+		    paddr = page_address(pte_page(*pte));
+		    printk("va 0x%llx -> pa 0x%llx\n", addr, paddr);
+		    printk("virt_to_phys: 0x%llx\n", virt_to_phys(paddr) | offsetMask);
+		    return virt_to_phys(paddr) | offsetMask;
+		}
+	    }
+	}
+    }
+}
+
+// The prototype functions for the nn driver -- must come before the struct definition
 static int     dev_open(struct inode *, struct file *);
 static int     dev_release(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char *, size_t, loff_t *);
@@ -340,7 +475,7 @@ long device_ioctl(struct file* file,
 		  unsigned long ioctl_param)
 {
     int res;
-    xlen_t temp, oldasid;
+    xlen_t temp, oldasid, block_64, ret;
     
     switch(ioctl_num){
     case IOCTL_SET_FILESIZE:
@@ -368,15 +503,30 @@ long device_ioctl(struct file* file,
 	    break;
 	}
 
-	vconfig = (x_len *)temp;
-	//phys_addr_t paddr = virt_to_phys((void*) temp);
-	//printk("IOCTL_SET_NN: virt addr 0x%p, phys addr 0x%p\n", (void*) temp, (void*) paddr);
+	vconfig = (xlen_t *)temp;
+	printk("IOCTL_SET_NN: virt addr 0x%p\n", (void*) temp);
+		
 	
-	test2 = (xlen_t*) kmalloc(file_bytes, GFP_KERNEL);
-	copy_from_user(test2, (const void*)temp, file_bytes);
-	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = test2;
-
-	uint64_t block_64;
+        // FIXME: !!!!! KLUDGE !!!!!
+	// validate address correct user address and pinned 
+	if (!access_ok(VERIFY_READ, 
+		      temp, 
+		      asid_nnid_ktable->entry[asid].asid_nnid[nnid].size 
+		       * sizeof(xlen_t))) {
+		BUG_ON(1);
+	    }
+	
+	
+	/*xlen_t * kaddr;
+	kaddr = (xlen_t *) kmalloc(file_bytes, GFP_KERNEL);
+	copy_from_user(kaddr, temp, file_bytes);
+	void *kphys = virt_to_phys((void*) kaddr);
+	printk("kernel phys: 0x%p\n", kphys);
+	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = (xlen_t*)kphys;*/
+	
+	
+	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = (xlen_t *)temp;
+	
         copy_from_user(&block_64, vconfig, sizeof(block_64));
 	if(res != 0)
 	{
@@ -386,17 +536,14 @@ long device_ioctl(struct file* file,
 	
 	block_64 = (block_64 >> 4) & 3;
 	asid_nnid_ktable->entry[asid].asid_nnid[nnid].elements_per_block = 1 << (block_64+2);
-
-	//printk("elements_per_block: %ld\n", asid_nnid_ktable->entry[asid].asid_nnid[nnid].elements_per_block);
 	asid_nnid_ktable->entry[asid].num_valid ++;
-	//printk("num_valid: %d\n", asid_nnid_ktable->entry[asid].num_valid);
-	
 	oldasid = set_asid(asid);
-	printk("set_asid: oldasid = %llu\n", oldasid);
-	
+	printk("set_asid: oldasid = %llu\n", oldasid);	
 	connections_per_epoch = binary_config_num_connections();
-	//printk("connections_per_epoch: %ld\n", connections_per_epoch);
 	
+	/*csr_clear(sstatus, SR_PUM);
+	  dumpNNBytes(asid_nnid_ktable->entry[asid].asid_nnid[nnid].config, asid_nnid_ktable->entry[asid].asid_nnid[nnid].size);
+	  csr_set(sstatus, SR_PUM);*/
 	break;
     case IOCTL_SHOW_ANT:
 	asid_nnid_table_info(asid_nnid_ktable);
@@ -408,9 +555,21 @@ long device_ioctl(struct file* file,
 	//asid_nnid_ktable = (asid_nnid_table *) pnew_table;
 	//printk("0x%p\n", asid_nnid_ktable);
 	asid_nnid_table_info(asid_nnid_ktable);
-	    
+	
 	break;
 
+    case IOCTL_TRANS_PHYS_ADDR:
+	printk("\tIOCTL_TRANS_PHYS_ADDR for PID %d\n", current->pid);	
+	res = get_user(temp, (xlen_t*)ioctl_param);
+	if(res != 0) {
+       	    printk("IOCTL_TRANS_PHYS_ADDR error\n");
+	    break;
+	}
+	ret = user_virt_to_phys(temp);
+        ret = debug_read_utl((void*)ret);
+	printk("\t debug_read_utl = 0x%llx\n", ret);
+
+	break;
     default:
 	printk("default ioctl\n");
 	break;
@@ -438,102 +597,75 @@ static struct file_operations fops =
  *  time and that it can be discarded and its memory freed up after that point.
  *  @return returns 0 if successful
  */
-static int __init ebbchar_init(void){
-   printk(KERN_INFO "EBBChar: Initializing the EBBChar LKM\n");
-
-   // Try to dynamically allocate a major number for the device -- more difficult but worth it
+static int __init nn_init(void){
+   printk(KERN_INFO "NNDEV: Initializing the NNDEV\n");
    majorNumber = register_chrdev(0, DEVICE_NAME, &fops);
    if (majorNumber<0){
-      printk(KERN_ALERT "EBBChar failed to register a major number\n");
+      printk(KERN_ALERT "NNDEV failed to register a major number\n");
       return majorNumber;
    }
-   printk(KERN_INFO "EBBChar: registered correctly with major number %d\n", majorNumber);
+   printk(KERN_INFO "NNDEV: registered correctly with major number %d\n", majorNumber);
 
    // Register the device class
-   ebbcharClass = class_create(THIS_MODULE, CLASS_NAME);
-   if (IS_ERR(ebbcharClass)){                // Check for error and clean up if there is
+   nnClass = class_create(THIS_MODULE, CLASS_NAME);
+   if (IS_ERR(nnClass)){
       unregister_chrdev(majorNumber, DEVICE_NAME);
-      printk(KERN_ALERT "Failed to register device class\n");
-      return PTR_ERR(ebbcharClass);          // Correct way to return an error on a pointer
+      printk(KERN_ALERT "Failed to register NNDEV class\n");
+      return PTR_ERR(nnClass);
    }
-   printk(KERN_INFO "EBBChar: device class registered correctly\n");
+   printk(KERN_INFO "NNDEV: device class registered correctly\n");
 
    // Register the device driver
-   ebbcharDevice = device_create(ebbcharClass, NULL, MKDEV(majorNumber, 0), NULL, DEVICE_NAME);
-   if (IS_ERR(ebbcharDevice)){               // Clean up if there is an error
-      class_destroy(ebbcharClass);           // Repeated code but the alternative is goto statements
+   nnDevice = device_create(nnClass, NULL, MKDEV(majorNumber, 0), NULL, DEVICE_NAME);
+   if (IS_ERR(nnDevice)){               // Clean up if there is an error
+      class_destroy(nnClass);           // Repeated code but the alternative is goto statements
       unregister_chrdev(majorNumber, DEVICE_NAME);
       printk(KERN_ALERT "Failed to create the device\n");
-      return PTR_ERR(ebbcharDevice);
+      return PTR_ERR(nnDevice);
    }
-   printk(KERN_INFO "EBBChar: device class created correctly\n"); // Made it! device was initialized
+   printk(KERN_INFO "NNDEV: device class created correctly\n"); // Made it! device was initialized
    return 0;
 }
 
-/** @brief The LKM cleanup function
- *  Similar to the initialization function, it is static. The __exit macro notifies that if this
- *  code is used for a built-in driver (not a LKM) that this function is not required.
- */
-static void __exit ebbchar_exit(void){
-   device_destroy(ebbcharClass, MKDEV(majorNumber, 0));     // remove the device
-   class_unregister(ebbcharClass);                          // unregister the device class
-   class_destroy(ebbcharClass);                             // remove the device class
+static void __exit nn_exit(void){
+   device_destroy(nnClass, MKDEV(majorNumber, 0));     // remove the device
+   class_unregister(nnClass);                          // unregister the device class
+   class_destroy(nnClass);                             // remove the device class
    unregister_chrdev(majorNumber, DEVICE_NAME);             // unregister the major number
-   printk(KERN_INFO "EBBChar: Goodbye from the LKM!\n");
+   printk(KERN_INFO "NNDEV: Goodbye from the LKM!\n");
 }
 
-/** @brief The device open function that is called each time the device is opened
- *  This will only increment the numberOpens counter in this case.
- *  @param inodep A pointer to an inode object (defined in linux/fs.h)
- *  @param filep A pointer to a file object (defined in linux/fs.h)
- */
 static int dev_open(struct inode *inodep, struct file *filep){
    numberOpens++;
-   printk(KERN_INFO "EBBChar: Device has been opened %d time(s)\n", numberOpens);
+   printk(KERN_INFO "NNDEV: Device has been opened %d time(s)\n", numberOpens);
    return 0;
 }
 
-/** @brief This function is called whenever device is being read from user space i.e. data is
- *  being sent from the device to the user. In this case is uses the copy_to_user() function to
- *  send the buffer string to the user and captures any errors.
- *  @param filep A pointer to a file object (defined in linux/fs.h)
- *  @param buffer The pointer to the buffer to which this function writes the data
- *  @param len The length of the b
- *  @param offset The offset if required
- */
 static ssize_t dev_read(struct file *filep, char *buffer, size_t len, loff_t *offset){
    int error_count = 0;
-   // copy_to_user has the format ( * to, *from, size) and returns 0 on success
    error_count = copy_to_user(buffer, message, size_of_message);
 
-   if (error_count==0){            // if true then have success
-      printk(KERN_INFO "EBBChar: Sent %d characters to the user\n", size_of_message);
-      return (size_of_message=0);  // clear the position to the start and return 0
+   if (error_count==0) {
+      printk(KERN_INFO "NNDEV: Sent %d characters to the user\n", size_of_message);
+      return (size_of_message=0);
    }
    else {
-      printk(KERN_INFO "EBBChar: Failed to send %d characters to the user\n", error_count);
-      return -EFAULT;              // Failed -- return a bad address message (i.e. -14)
+      printk(KERN_INFO "NNDEV: Failed to send %d characters to the user\n", error_count);
+      return -EFAULT;
    }
 }
 
-/** @brief This function is called whenever the device is being written to from user space i.e.
- *  data is sent to the device from the user. The data is copied to the message[] array in this
- *  LKM using the sprintf() function along with the length of the string.
- *  @param filep A pointer to a file object
- *  @param buffer The buffer to that contains the string to write to the device
- *  @param len The length of the array of data that is being passed in the const char buffer
- *  @param offset The offset if required
- */
-static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset){
-    printk("EBBChar: Received %d characters from the user\n", (int)len);
+
+static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, loff_t *offset) {
+    uintptr_t old_antp;
+
+    printk("NNDEV: Received %d characters from the user\n", (int)len);
     
     if(strcmp(buffer, "createant") == 0)
     {
 	if(asid_nnid_ktable == NULL) 
 	{
 	    printk("Creating asid_nnid_ktable\n");
-	    int old_antp;
-
 	    asid = 0; 
 	    nnid = 0;
 	    asid_nnid_table_create(&asid_nnid_ktable, asid * 2 + 1, nnid * 2 + 1);
@@ -541,8 +673,12 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 	    printk("entry = 0x%p\n", asid_nnid_ktable->entry);
 	    
 	    old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
-	    //old_antp = set_antp((asid_nnid_table_entry *)pentry, asid_nnid_ktable->size);
-	    printk("createant: old_antp = %d\n", old_antp);
+	    printk("createant: old_antp = 0x%lx\n", old_antp);
+	    BUG_ON(old_antp != (uintptr_t)-1);
+
+	    old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
+	    printk("createant: old_antp = 0x%lx\n", old_antp);
+	    BUG_ON(old_antp != (uintptr_t)asid_nnid_ktable->entry);
 	}
 	else
 	{
@@ -569,19 +705,10 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
     return len;
 }
 
-/** @brief The device release function that is called whenever the device is closed/released by
- *  the userspace program
- *  @param inodep A pointer to an inode object (defined in linux/fs.h)
- *  @param filep A pointer to a file object (defined in linux/fs.h)
- */
 static int dev_release(struct inode *inodep, struct file *filep){
-   printk(KERN_INFO "EBBChar: Device successfully closed\n");
+   printk(KERN_INFO "NNDEV: Device successfully closed\n");
    return 0;
 }
 
-/** @brief A module must use the module_init() module_exit() macros from linux/init.h, which
- *  identify the initialization function at insertion time and the cleanup function (as
- *  listed above)
- */
-module_init(ebbchar_init);
-module_exit(ebbchar_exit);
+module_init(nn_init);
+module_exit(nn_exit);
