@@ -54,6 +54,7 @@ void start_thread(struct pt_regs *regs, unsigned long pc,
 	unsigned long sp)
 {
 	regs->sstatus = SR_PIE /* User mode, irqs on */ | SR_FS_INITIAL;
+	regs->sstatus |= SR_XS_INITIAL; /* Enable (Turn On) accelerator extensions status : aka custom 0-3 */
 	regs->sepc = pc;
 	regs->sp = sp;
 	set_fs(USER_DS);

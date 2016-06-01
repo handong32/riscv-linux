@@ -104,6 +104,10 @@ config SBI_CONSOLE
 	select TTY
 	default y
 
+config XFD
+       tristate "xfilesdana support"
+       default y
+
 config RVC
 	bool "Use compressed instructions (RV32C or RV64C)"
 	default n
