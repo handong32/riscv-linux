@@ -144,14 +144,14 @@ static int file_bytes;
 static int file_size;
 static uint64_t connections_per_epoch;
 static xlen_t * vconfig;
-/*static phys_addr_t nqd;
+static phys_addr_t nqd;
 static phys_addr_t pnew_table;
 static phys_addr_t pentry;
 static phys_addr_t pasid_nnid;
 static phys_addr_t ptransaction_io; 
 static phys_addr_t pinput;
 static phys_addr_t poutput;
-static int    ioNum = 100;*/
+//static int    ioNum = 100;
 
 #define MAJOR_NUM 101
 #define IOCTL_SET_FILESIZE _IOR(MAJOR_NUM, 0, xlen_t *)
@@ -317,11 +317,13 @@ void asid_nnid_table_create(asid_nnid_table ** new_table, size_t table_size,
 
   // Allocate space for the table
   *new_table = (asid_nnid_table *) kmalloc(sizeof(asid_nnid_table), GFP_KERNEL);
-  //pnew_table = virt_to_phys((void*) (*new_table));
-
+  pnew_table = debug_virt_to_phys(*new_table);
+  //printk("new_table = 0x%p, pnew_table = 0x%p, virt_to_phys = 0x%p\n", *new_table, pnew_table, virt_to_phys(*new_table));
+  
   (*new_table)->entry =
       (asid_nnid_table_entry *) kmalloc(sizeof(asid_nnid_table_entry) * table_size, GFP_KERNEL);
-  //pentry = virt_to_phys((void*) ((*new_table)->entry));
+  
+  pentry = debug_virt_to_phys((*new_table)->entry);
 
   (*new_table)->size = table_size;
 
@@ -329,42 +331,45 @@ void asid_nnid_table_create(asid_nnid_table ** new_table, size_t table_size,
     // Create the configuration region
     (*new_table)->entry[i].asid_nnid =
 	(nn_configuration *) kmalloc(configs_per_entry * sizeof(nn_configuration), GFP_KERNEL);
-    //pasid_nnid = virt_to_phys((void*) ((*new_table)->entry[i].asid_nnid));
+    
+    pasid_nnid = debug_virt_to_phys((*new_table)->entry[i].asid_nnid); 
+
+    //virt_to_phys((void*) ((*new_table)->entry[i].asid_nnid));
     
     (*new_table)->entry[i].asid_nnid->config = NULL;
     (*new_table)->entry[i].num_configs = configs_per_entry;
     (*new_table)->entry[i].num_valid = 0;
 
 
-#if 0
-    /* THE FOLLOWING IS FOR MEMORY BASED I/O -- NOT CURRENT SUPPORTED BY HW YET */
+/*#if 0
+     THE FOLLOWING IS FOR MEMORY BASED I/O -- NOT CURRENT SUPPORTED BY HW YET
     // Create the io region
     (*new_table)->entry[i].transaction_io = (io *) kmalloc(sizeof(io), GFP_KERNEL);
-    //ptransaction_io = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io));
+    ptransaction_io = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io));
     
     (*new_table)->entry[i].transaction_io->header = 0;
     (*new_table)->entry[i].transaction_io->input = (queue *) kmalloc(sizeof(queue), GFP_KERNEL);
-    //pinput = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io->input));
+    pinput = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io->input));
     
     (*new_table)->entry[i].transaction_io->output = (queue *) kmalloc(sizeof(queue), GFP_KERNEL);
-    //poutput = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io->output));
+    poutput = virt_to_phys((void*) ((*new_table)->entry[i].transaction_io->output));
 
     construct_queue(&(*new_table)->entry[i].transaction_io->input, 16);
     construct_queue(&(*new_table)->entry[i].transaction_io->output, 16);
-#endif
+#endif*/
   }
 
 }
 
-/*void update_phys(asid_nnid_table * table)
+void update_phys(asid_nnid_table * table)
 {
-    table->entry[0].transaction_io->input = (queue*) pinput;
-    table->entry[0].transaction_io->output = (queue*) poutput;
-    table->entry[0].transaction_io = (io *) ptransaction_io;
+    //table->entry[0].transaction_io->input = (queue*) pinput;
+    //table->entry[0].transaction_io->output = (queue*) poutput;
+    //table->entry[0].transaction_io = (io *) ptransaction_io;
     table->entry[0].asid_nnid = (nn_configuration *) pasid_nnid;
-    table->entry = (asid_nnid_table_entry *) pentry;
+    //table->entry = (asid_nnid_table_entry *) pentry;
     //table = (asid_nnid_table *)pnew_table;
-    }*/
+}
 
 void asid_nnid_table_info(asid_nnid_table * table) {
   int i, j;
@@ -455,6 +460,7 @@ xlen_t user_virt_to_phys(xlen_t addr)
 		if (pte_present(*pte)) 
 		{
 		    paddr = page_address(pte_page(*pte));
+		    printk("pte = 0x%llx, pte_page = 0x%llx\n", pte->pte, pte_page(*pte));
 		    printk("va 0x%llx -> pa 0x%llx\n", addr, paddr);
 		    printk("virt_to_phys: 0x%llx\n", virt_to_phys(paddr) | offsetMask);
 		    return virt_to_phys(paddr) | offsetMask;
@@ -505,7 +511,6 @@ long device_ioctl(struct file* file,
 
 	vconfig = (xlen_t *)temp;
 	printk("IOCTL_SET_NN: virt addr 0x%p\n", (void*) temp);
-		
 	
         // FIXME: !!!!! KLUDGE !!!!!
 	// validate address correct user address and pinned 
@@ -525,8 +530,10 @@ long device_ioctl(struct file* file,
 	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = (xlen_t*)kphys;*/
 	
 	
-	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = (xlen_t *)temp;
-	
+	//asid_nnid_ktable->entry[asid].asid_nnid[nnid].config = (xlen_t *)temp;
+	asid_nnid_ktable->entry[asid].asid_nnid[nnid].config 
+	    = (xlen_t *) debug_virt_to_phys(temp); //ser_virt_to_phys(temp);
+
         copy_from_user(&block_64, vconfig, sizeof(block_64));
 	if(res != 0)
 	{
@@ -551,10 +558,10 @@ long device_ioctl(struct file* file,
 
     case IOCTL_PHYS_ADDR:
 	//printk("0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n, 0x%p\n", nqd, pnew_table, pentry, pasid_nnid, ptransaction_io, pinput, poutput);
-	//update_phys(asid_nnid_ktable);
+	update_phys(asid_nnid_ktable);
 	//asid_nnid_ktable = (asid_nnid_table *) pnew_table;
 	//printk("0x%p\n", asid_nnid_ktable);
-	asid_nnid_table_info(asid_nnid_ktable);
+	//asid_nnid_table_info(asid_nnid_ktable);
 	
 	break;
 
@@ -564,7 +571,7 @@ long device_ioctl(struct file* file,
 	if(res != 0) {
        	    printk("IOCTL_TRANS_PHYS_ADDR error\n");
 	    break;
-	}
+}	
 	ret = user_virt_to_phys(temp);
         ret = debug_read_utl((void*)ret);
 	printk("\t debug_read_utl = 0x%llx\n", ret);
@@ -671,14 +678,18 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 	    asid_nnid_table_create(&asid_nnid_ktable, asid * 2 + 1, nnid * 2 + 1);
 
 	    printk("entry = 0x%p\n", asid_nnid_ktable->entry);
+	    //asid_nnid_table_info(asid_nnid_ktable);
 	    
-	    old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
+	    //printk("debug_virt_to_phys = 0x%llx\n", debug_virt_to_phys(asid_nnid_ktable->entry));
+	    //printk("user_virt_to_phys = 0x%llx\n", user_virt_to_phys(asid_nnid_ktable->entry));
+	    
+	    old_antp = set_antp((asid_nnid_table_entry *)debug_virt_to_phys(asid_nnid_ktable->entry), asid_nnid_ktable->size);
 	    printk("createant: old_antp = 0x%lx\n", old_antp);
 	    BUG_ON(old_antp != (uintptr_t)-1);
 
-	    old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
-	    printk("createant: old_antp = 0x%lx\n", old_antp);
-	    BUG_ON(old_antp != (uintptr_t)asid_nnid_ktable->entry);
+	    //old_antp = set_antp(asid_nnid_ktable->entry, asid_nnid_ktable->size);
+	    //printk("createant: old_antp = 0x%lx\n", old_antp);
+	    //BUG_ON(old_antp != (uintptr_t)asid_nnid_ktable->entry);
 	}
 	else
 	{
