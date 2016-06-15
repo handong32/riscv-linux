@@ -6,6 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 
+#include <asm/page.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -61,12 +62,14 @@ static int dev_open(struct inode *, struct file *);
 static int dev_release(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char *, size_t, loff_t *);
+static int dev_mmap(struct file *, struct vm_area_struct *);
 
 static struct file_operations fops = {
     .open = dev_open,
     .read = dev_read,
     .write = dev_write,
     .release = dev_release,
+    .mmap = dev_mmap,
     .unlocked_ioctl = xfd_ioctl,
 };
 
@@ -113,6 +116,22 @@ static void __exit xfd_exit(void) {
   printk(KERN_INFO "XFD EXITED\n");
 }
 
+
+struct TaskState {
+    struct task_struct *task;
+    // XFILES NNIDTABLE
+};
+
+struct NNState {
+};
+
+struct GlobalState {
+    hashtable tasks;
+    // XFILES ANT
+};
+
+
+
 static int dev_open(struct inode *inodep, struct file *filep) {
   numberOpens++;
   printk(KERN_INFO "XFD: Device has been opened %d time(s)\n", numberOpens);
@@ -126,7 +145,46 @@ static ssize_t dev_read(struct file *filep, char *buffer, size_t len,
 
 static ssize_t dev_write(struct file *filep, const char *buffer, size_t len,
                          loff_t *offset) {
-    return 0;
+    int numpages, got;
+    struct page *the_page;
+    struct vm_area_struct *the_vma;
+
+    printk(KERN_INFO "XFD: %s : filp=0x%p buffer=0x%p (0x%p) len=%zu offset=0x%p\n", __func__,
+	   filep, buffer, (void *)PAGE_DOWN((unsigned long)buffer), len, offset);
+
+    // nn config must be on a page boundary and the vma must be for an integral number
+    // of pages
+    if ((unsigned long)buffer != PAGE_DOWN((unsigned long)buffer)) {
+	return -EFAULT;
+    }
+    // computer number of pages
+    numpages = len >> PAGE_SHIFT;
+    if (!numpages) numpages=1;
+
+    // FIXME:  only support a single page size nn config for the moment
+    if (numpages != 1) {
+	return -EINVAL;
+    }
+
+    printk("XFD: %s: numpages = %d\n", __func__, numpages);
+    // obtain backing pages of user nnconfig memory
+    down_read(&current->mm->mmap_sem);
+    got = get_user_pages(current, current->mm, (unsigned long)buffer, numpages, 
+			 1, // write
+			 0, // force
+			 &the_page,
+			 &the_vma);
+    up_read(&current->mm->mmap_sem);
+
+    printk("XFD: %s: got=%d\n", __func__, got);
+
+    if (got < 0) return got;
+    if (got != 1) return -ENXIO;
+
+    printk("XFD: %s: the_page=0x%p the_vma=0x%p\n", __func__,
+	   (void *)the_page, (void *)the_vma);
+
+    return len;
 }
 
 static int dev_release(struct inode *inodep, struct file *filep) {
@@ -134,5 +192,10 @@ static int dev_release(struct inode *inodep, struct file *filep) {
   return 0;
 }
 
+static int dev_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    printk(KERN_INFO "XFD: %s : filp=0x%p vma=0x%p\n", __func__, filp, vma);
+    return 0;
+}
 module_init(xfd_init);
 module_exit(xfd_exit);
